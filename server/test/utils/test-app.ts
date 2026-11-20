@@ -1,0 +1,394 @@
+import { INestApplication } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
+import { getConnectionToken } from '@nestjs/mongoose';
+import { Test } from '@nestjs/testing';
+import {
+  EvaluationVerdict,
+  isExternalOnly,
+  JUROR_ROLES,
+  PeriodTerm,
+  ProgramLevel,
+  Role,
+  ThesisStatus,
+} from '@thesis/shared';
+import { Types, type Connection } from 'mongoose';
+import { randomUUID } from 'node:crypto';
+import request from 'supertest';
+import type { App } from 'supertest/types';
+import { AppModule } from '../../src/app.module';
+import { configureApp } from '../../src/app.setup';
+import { AssignmentResponsesService } from '../../src/assignments/assignment-responses.service';
+import { AssignmentsService } from '../../src/assignments/assignments.service';
+import { CatalogsService } from '../../src/catalogs/catalogs.service';
+import type { AuthUser } from '../../src/common/types/auth-user';
+import { EvaluationsService } from '../../src/evaluations/evaluations.service';
+import {
+  STORAGE_DRIVER,
+  type StorageDriver,
+} from '../../src/files/blob-storage';
+import { ThesisDocument } from '../../src/theses/schemas/thesis.schema';
+import { ThesesService } from '../../src/theses/theses.service';
+import { CreateUserDto } from '../../src/users/dto/create-user.dto';
+import { NewExternalJurorDto } from '../../src/users/dto/external-juror.dto';
+import { UserDocument } from '../../src/users/schemas/user.schema';
+import { UsersService } from '../../src/users/users.service';
+import { WorkflowService } from '../../src/workflow/workflow.service';
+
+/** `storageDriver` overrides STORAGE_DRIVER (env is read when AppModule is imported). */
+export async function createTestApp(
+  opts: { storageDriver?: StorageDriver } = {},
+): Promise<INestApplication> {
+  const builder = Test.createTestingModule({ imports: [AppModule] });
+  if (opts.storageDriver)
+    builder.overrideProvider(STORAGE_DRIVER).useValue(opts.storageDriver);
+  const moduleRef = await builder.compile();
+  const app = moduleRef.createNestApplication();
+  configureApp(app);
+  await app.init();
+  // Unique indexes must exist before the first test, otherwise duplicate-key tests race index builds.
+  await app.get<Connection>(getConnectionToken()).syncIndexes();
+  return app;
+}
+
+/** Drops the database so each e2e file starts clean (files run in band). */
+export async function closeTestApp(app: INestApplication): Promise<void> {
+  await app.get<Connection>(getConnectionToken()).dropDatabase();
+  await app.close();
+}
+
+/** Typed HTTP server for supertest (getHttpServer() is typed as any). */
+export const http = (app: INestApplication): App => app.getHttpServer() as App;
+
+export const TEST_PASSWORD = 'Password123!';
+
+export type TestAgent = ReturnType<typeof request.agent>;
+
+export function createUser(
+  app: INestApplication,
+  data: Partial<CreateUserDto> & Pick<CreateUserDto, 'roles'>,
+): Promise<UserDocument> {
+  const isJuror = data.roles.some((r) => JUROR_ROLES.includes(r));
+  return app.get(UsersService).create({
+    email: `${data.roles[0].toLowerCase()}.${randomUUID().slice(0, 8)}@test.edu.co`,
+    password: isExternalOnly(data.roles) ? undefined : TEST_PASSWORD,
+    firstName: 'Test',
+    lastName: 'User',
+    jurorProfile: isJuror
+      ? { institution: 'Universidad de Córdoba', isUnicordoba: true }
+      : undefined,
+    ...data,
+  });
+}
+
+/** Returns a supertest agent that keeps the auth cookies. */
+export async function loginAgent(
+  app: INestApplication,
+  email: string,
+  password = TEST_PASSWORD,
+): Promise<TestAgent> {
+  const agent = request.agent(http(app));
+  await agent.post('/api/auth/login').send({ email, password }).expect(200);
+  return agent;
+}
+
+/** Agent authenticated with a directly signed access token (e.g. external jurors, scoped sessions). */
+export async function signedAgent(
+  app: INestApplication,
+  user: { id?: unknown; email: string; roles: Role[] },
+  scope?: { assignmentIds: string[] },
+): Promise<TestAgent> {
+  const token = await app.get(JwtService).signAsync(
+    { sub: String(user.id), email: user.email, roles: user.roles, scope },
+    {
+      secret: app.get(ConfigService).getOrThrow<string>('JWT_ACCESS_SECRET'),
+      expiresIn: 900,
+    },
+  );
+  return request.agent(http(app)).set('Authorization', `Bearer ${token}`);
+}
+
+export function createExternalJuror(
+  app: INestApplication,
+  data: Partial<NewExternalJurorDto> = {},
+): Promise<UserDocument> {
+  return app.get(UsersService).createExternalJuror({
+    email: `ext.${randomUUID().slice(0, 8)}@uni.example.org`,
+    firstName: 'Elena',
+    lastName: 'Externa',
+    institution: 'Universidad Nacional de La Plata',
+    highestDegree: 'Doctorado',
+    country: 'Argentina',
+    ...data,
+  });
+}
+
+export interface CatalogFixture {
+  programId: string;
+  periodId: string;
+  cohortId: string;
+}
+
+/** Creates a program, period and cohort with unique codes. */
+export async function createCatalog(
+  app: INestApplication,
+  opts: { programCode?: string; year?: number; term?: PeriodTerm } = {},
+): Promise<CatalogFixture> {
+  const catalogs = app.get(CatalogsService);
+  const program = await catalogs.createProgram({
+    code: opts.programCode ?? `P${randomUUID().slice(0, 6).toUpperCase()}`,
+    name: 'Programa de prueba',
+    level: ProgramLevel.MASTER,
+  });
+  const year = opts.year ?? 2000 + Math.floor(Math.random() * 100);
+  const term = opts.term ?? PeriodTerm.II;
+  const period =
+    (await catalogs.listPeriods()).find((p) => p.code === `${year}-${term}`) ??
+    (await catalogs.createPeriod({
+      year,
+      term,
+      startsAt: `${year}-07-01`,
+      endsAt: `${year}-12-15`,
+    }));
+  const cohort = await catalogs.createCohort({
+    programId: program.id as string,
+    periodId: period.id as string,
+    number: 1,
+    name: 'Corte 1',
+  });
+  return {
+    programId: program.id as string,
+    periodId: period.id as string,
+    cohortId: cohort.id as string,
+  };
+}
+
+/** Registers a thesis through the service with fresh student/advisor unless given. */
+export async function createThesis(
+  app: INestApplication,
+  catalog: CatalogFixture,
+  data: { studentId?: string; advisorId?: string; title?: string } = {},
+): Promise<ThesisDocument> {
+  const studentId =
+    data.studentId ??
+    ((await createUser(app, { roles: [Role.STUDENT] })).id as string);
+  const advisorId =
+    data.advisorId ??
+    ((await createUser(app, { roles: [Role.INTERNAL_JUROR] })).id as string);
+  return app.get(ThesesService).create(
+    {
+      title: data.title ?? 'Tesis de prueba',
+      studentId,
+      advisorId,
+      ...catalog,
+    },
+    { role: Role.COORDINATOR },
+  );
+}
+
+/** Minimal buffers that pass magic-byte detection. */
+export const PDF_BYTES = Buffer.from('%PDF-1.4\n% test manuscript\n%%EOF\n');
+export const DOCX_BYTES = Buffer.concat([
+  Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+  Buffer.alloc(26),
+  Buffer.from('[Content_Types].xml'),
+  Buffer.from('word/document.xml'),
+]);
+
+/** Acting coordinator for fixtures that go through services directly. */
+const FIXTURE_COORDINATOR = {
+  id: new Types.ObjectId().toHexString(),
+  email: 'coord@test.edu.co',
+  roles: [Role.COORDINATOR],
+};
+
+/** A SUBMITTED thesis with a manuscript (CU-01 preconditions). */
+export async function createAssignableThesis(
+  app: INestApplication,
+  catalog?: CatalogFixture,
+  data: { studentId?: string; advisorId?: string } = {},
+): Promise<ThesisDocument> {
+  const thesis = await createThesis(
+    app,
+    catalog ?? (await createCatalog(app)),
+    data,
+  );
+  return app
+    .get(ThesesService)
+    .addManuscript(
+      thesis.id as string,
+      { buffer: PDF_BYTES, originalname: 'tesis.pdf', size: PDF_BYTES.length },
+      FIXTURE_COORDINATOR,
+    );
+}
+
+/** CU-01 through the service with existing jurors (slot = position + 1). */
+export function assignJury(
+  app: INestApplication,
+  thesisId: string,
+  jurorIds: string[],
+) {
+  return app
+    .get(AssignmentsService)
+    .assignJury(
+      thesisId,
+      { jurors: jurorIds.map((jurorId) => ({ jurorId })) },
+      { id: FIXTURE_COORDINATOR.id, role: Role.COORDINATOR },
+    );
+}
+
+/** The AuthUser a service call acts as (no scope). */
+export const asAuthUser = (u: UserDocument): AuthUser => ({
+  id: u.id as string,
+  email: u.email,
+  roles: u.roles,
+});
+
+export interface ThesisUnderEvaluation {
+  thesis: ThesisDocument;
+  student: UserDocument;
+  /** Slot 1 and slot 2 primary jurors (internal, Universidad de Córdoba). */
+  jurors: [UserDocument, UserDocument];
+  /** Their ACCEPTED assignments, same order. */
+  assignmentIds: [string, string];
+}
+
+/**
+ * A thesis in UNDER_EVALUATION: CU-01 with two fresh internal jurors, both accept (CU-08).
+ * The student and jurors have TEST_PASSWORD, so `loginAgent(app, x.email)` works.
+ */
+export async function createThesisUnderEvaluation(
+  app: INestApplication,
+  catalog?: CatalogFixture,
+): Promise<ThesisUnderEvaluation> {
+  const student = await createUser(app, { roles: [Role.STUDENT] });
+  const jurors: [UserDocument, UserDocument] = [
+    await createUser(app, { roles: [Role.INTERNAL_JUROR] }),
+    await createUser(app, { roles: [Role.INTERNAL_JUROR] }),
+  ];
+  const created = await createAssignableThesis(app, catalog, {
+    studentId: student.id as string,
+  });
+  const { assignments } = await assignJury(
+    app,
+    created.id as string,
+    jurors.map((j) => j.id as string),
+  );
+  const responses = app.get(AssignmentResponsesService);
+  for (const [i, a] of assignments.entries())
+    await responses.accept(a.id, asAuthUser(jurors[i]));
+  const thesis = await app.get(ThesesService).findById(created.id as string);
+  return {
+    thesis,
+    student,
+    jurors,
+    assignmentIds: [assignments[0].id, assignments[1].id],
+  };
+}
+
+/** CU-02 submit through the service with a full rubric and valid comments (runs RN-08). */
+export function submitEvaluation(
+  app: INestApplication,
+  assignmentId: string,
+  juror: UserDocument,
+  verdict: EvaluationVerdict,
+) {
+  return app.get(EvaluationsService).submit(
+    assignmentId,
+    {
+      rubric: { methodology: 4, relevance: 5, writingQuality: 4 },
+      verdict,
+      comments: 'Concepto de prueba con comentarios suficientes.',
+    },
+    asAuthUser(juror),
+  );
+}
+
+/** A thesis in READY_FOR_DEFENSE: both primaries submitted APPROVED_FOR_DEFENSE, no feedback. */
+export async function createThesisReadyForDefense(
+  app: INestApplication,
+  catalog?: CatalogFixture,
+): Promise<ThesisUnderEvaluation> {
+  const fx = await createThesisUnderEvaluation(app, catalog);
+  for (const i of [0, 1] as const)
+    await submitEvaluation(
+      app,
+      fx.assignmentIds[i],
+      fx.jurors[i],
+      EvaluationVerdict.APPROVED_FOR_DEFENSE,
+    );
+  return {
+    ...fx,
+    thesis: await app.get(ThesesService).findById(fx.thesis.id as string),
+  };
+}
+
+/** supertest parser that collects binary responses into a Buffer. */
+export const binaryParser = (
+  response: unknown,
+  cb: (err: Error | null, body: Buffer) => void,
+) => {
+  const res = response as NodeJS.ReadableStream;
+  const chunks: Buffer[] = [];
+  res.on('data', (c: Buffer) => chunks.push(c));
+  res.on('end', () => cb(null, Buffer.concat(chunks)));
+};
+
+/**
+ * Until the evaluations module lands: UNDER_EVALUATION → READY_FOR_DEFENSE straight
+ * through WorkflowService (the only code path that changes thesis status).
+ */
+export function bringToReadyForDefense(
+  app: INestApplication,
+  thesisId: string,
+): Promise<ThesisDocument> {
+  return app.get(WorkflowService).transition({
+    thesisId,
+    to: ThesisStatus.READY_FOR_DEFENSE,
+    expectedFrom: [ThesisStatus.UNDER_EVALUATION],
+    actor: { id: FIXTURE_COORDINATOR.id, role: Role.COORDINATOR },
+    reason: 'test fixture',
+  });
+}
+
+export interface DefenseFixture {
+  thesis: ThesisDocument;
+  student: UserDocument;
+  jurors: UserDocument[];
+  jurorAgents: TestAgent[];
+  studentAgent: TestAgent;
+}
+
+/** Thesis whose two jurors accepted through the API, then moved to READY_FOR_DEFENSE. */
+export async function createReadyForDefenseThesis(
+  app: INestApplication,
+): Promise<DefenseFixture> {
+  const student = await createUser(app, { roles: [Role.STUDENT] });
+  const jurors = [
+    await createUser(app, { roles: [Role.INTERNAL_JUROR] }),
+    await createUser(app, { roles: [Role.INTERNAL_JUROR] }),
+  ];
+  const thesis = await createAssignableThesis(app, undefined, {
+    studentId: student.id as string,
+  });
+  const { assignments } = await assignJury(
+    app,
+    thesis.id as string,
+    jurors.map((j) => j.id as string),
+  );
+  const jurorAgents: TestAgent[] = [];
+  for (const [i, juror] of jurors.entries()) {
+    const agent = await loginAgent(app, juror.email);
+    await agent
+      .post(`/api/assignments/${assignments[i].id}/accept`)
+      .expect(200);
+    jurorAgents.push(agent);
+  }
+  return {
+    thesis: await bringToReadyForDefense(app, thesis.id as string),
+    student,
+    jurors,
+    jurorAgents,
+    studentAgent: await loginAgent(app, student.email),
+  };
+}
