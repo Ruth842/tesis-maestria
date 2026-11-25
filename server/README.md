@@ -72,6 +72,8 @@ pnpm --filter server seed -- --reset          # borra lo etiquetado DEMO y lo vu
 pnpm --filter server seed -- --reset --tag=QA # otra etiqueta (se normaliza a mayúsculas)
 ```
 
+https://ruth-mietia.vercel.app/
+
 - Usa `server/.env` como `admin:create`. **Nunca lo ejecutes contra la base de producción.**
 - Sin `--reset`, el comando se niega a correr si ya existen los datos de esa etiqueta.
 - `--reset` borra solo documentos con `seedTag: 'DEMO'`: usuarios, catálogos creados por el seed, tesis, asignaciones, evaluaciones, observaciones, sustentaciones, actas, notificaciones, archivos (`metadata.seedTag`; los de Blob también se borran del store) y los contadores de códigos `DEMO-…`. El contador de actas solo se borra si ya no lo usa ninguna acta.
