@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { AssignmentStatus, FeedbackStatus, Role, ThesisStatus } from '@thesis/shared';
+import { AssignmentStatus, FeedbackStatus, Role, TERMINAL_THESIS_STATUSES, ThesisStatus } from '@thesis/shared';
 import type { Assignment, ExternalLink } from '~/types/api';
 import { assignmentsApi, feedbackSummaryApi, thesesApi } from '~/utils/api';
 import { downloadFile } from '~/utils/http';
-import { THESIS_STATUS_LABELS, formatDate, fullName } from '~/utils/i18n';
+import { THESIS_STATUS_LABELS, formatDate, fullName, studentLabel } from '~/utils/i18n';
 import { useAuthStore } from '~/stores/auth';
 import { useUiStore } from '~/stores/ui';
 
@@ -19,6 +19,7 @@ const { programName, cohortName, periodCode } = useCatalogs();
 
 const assignments = ref<Assignment[]>([]);
 const assignOpen = ref(false);
+const editOpen = ref(false);
 const replaceOpen = ref(false);
 const replaceTarget = ref<Assignment | null>(null);
 const linksOpen = ref(false);
@@ -113,13 +114,10 @@ function onReplaced(l?: ExternalLink) {
     linksOpen.value = true;
   }
 }
-async function regenerateLink(a: Assignment) {
-  try {
-    links.value = [await assignmentsApi.externalLink(a.id)];
-    linksOpen.value = true;
-  } catch (e) {
-    ui.error(e);
-  }
+function showLink(l: ExternalLink) {
+  links.value = [l];
+  linksOpen.value = true;
+  reload();
 }
 async function upload() {
   const f = Array.isArray(uploadFile.value) ? uploadFile.value[0] : uploadFile.value;
@@ -163,12 +161,16 @@ const isExternalJuror = (a: Assignment) => a.juror?.roles.includes(Role.EXTERNAL
       <v-row>
         <v-col cols="12" lg="7">
           <v-card class="pa-4 mb-4">
-            <div class="text-h2-section mb-3">Ficha técnica</div>
+            <div class="d-flex align-center mb-3">
+              <div class="text-h2-section">Ficha técnica</div>
+              <v-spacer />
+              <v-btn v-if="canManage && !TERMINAL_THESIS_STATUSES.includes(thesis.status)" size="small" variant="outlined" prepend-icon="mdi-pencil-outline" @click="editOpen = true">Editar</v-btn>
+            </div>
             <v-row dense class="text-body-2">
               <v-col cols="6" md="4"><div class="text-meta">Programa</div>{{ programName(thesis.programId) }}</v-col>
               <v-col cols="6" md="4"><div class="text-meta">Cohorte</div>{{ cohortName(thesis.cohortId) }}</v-col>
               <v-col cols="6" md="4"><div class="text-meta">Periodo</div>{{ periodCode(thesis.periodId) }}</v-col>
-              <v-col cols="6" md="4"><div class="text-meta">Estudiante</div>{{ thesis.studentName }}</v-col>
+              <v-col cols="6" md="4"><div class="text-meta">{{ studentLabel(thesis.studentName) }}</div>{{ thesis.studentName }}</v-col>
               <v-col cols="6" md="4"><div class="text-meta">Director</div>{{ fullName(advisor) }}</v-col>
               <v-col cols="6" md="4"><div class="text-meta">Radicada</div>{{ formatDate(thesis.createdAt) }}</v-col>
             </v-row>
@@ -231,12 +233,14 @@ const isExternalJuror = (a: Assignment) => a.juror?.roles.includes(Role.EXTERNAL
                 <span class="text-meta">Asignado {{ formatDate(a.assignedAt) }} (hace {{ a.daysSinceAssigned }} días)</span>
               </div>
               <div v-if="a.declineReason" class="text-body-2 mt-2"><strong>Motivo:</strong> {{ a.declineReason }}</div>
-              <div class="d-flex ga-2 mt-2">
-                <v-btn v-if="replaceable(a)" size="small" color="warning" variant="tonal" prepend-icon="mdi-account-switch" @click="openReplace(a)">Reemplazar</v-btn>
-                <v-btn v-if="canManage && isExternalJuror(a) && ['PENDING', 'ACCEPTED'].includes(a.status)" size="small" variant="outlined" prepend-icon="mdi-link-variant" @click="regenerateLink(a)">
-                  Enlace de acceso
-                </v-btn>
+              <div v-if="replaceable(a)" class="d-flex ga-2 mt-2">
+                <v-btn size="small" color="warning" variant="tonal" prepend-icon="mdi-account-switch" @click="openReplace(a)">Reemplazar</v-btn>
               </div>
+              <InvitationLinkPanel
+                v-if="canManage && isExternalJuror(a) && ['PENDING', 'ACCEPTED'].includes(a.status)"
+                :assignment="a"
+                @generated="showLink"
+              />
             </v-sheet>
             <v-expansion-panels v-if="history.length" variant="accordion" class="mt-2">
               <v-expansion-panel title="Jurados reemplazados">
@@ -255,6 +259,7 @@ const isExternalJuror = (a: Assignment) => a.juror?.roles.includes(Role.EXTERNAL
       <JuryAssignmentDialog v-model="assignOpen" :thesis="thesis" :advisor-name="fullName(advisor)" @assigned="onAssigned" />
       <ReplaceJurorDialog v-model="replaceOpen" :thesis-id="thesis.id" :assignment="replaceTarget" :exclude-ids="assignments.map((a) => a.jurorId)" @done="onReplaced" />
       <ExternalLinksDialog v-model="linksOpen" :links="links" />
+      <ThesisEditDialog v-model="editOpen" :thesis="thesis" @saved="reload" />
     </template>
   </div>
 </template>

@@ -2,7 +2,7 @@
 import { AssignmentStatus, Role } from '@thesis/shared';
 import type { Assignment } from '~/types/api';
 import { assignmentsApi } from '~/utils/api';
-import { formatDate } from '~/utils/i18n';
+import { formatDate, studentLabel } from '~/utils/i18n';
 import { useUiStore } from '~/stores/ui';
 
 definePageMeta({ middleware: 'role', roles: [Role.INTERNAL_JUROR, Role.EXTERNAL_JUROR] });
@@ -69,7 +69,7 @@ const roleLabel = (a: Assignment) => (a.type === 'TIEBREAKER' ? 'Jurado diriment
     <div class="text-body-2 text-medium-emphasis mb-4">Designaciones, plazos y acceso a la evaluación (CU-08)</div>
     <v-progress-linear v-if="loading" indeterminate color="primary" class="mb-4" />
 
-    <v-card v-for="a in pending" :key="a.id" class="pa-5 mb-4" style="border-top: 4px solid #006837">
+    <v-card v-for="a in pending" :key="a.id" class="pa-5 mb-4 uc-accent-top">
       <div class="d-flex flex-wrap align-center ga-2 mb-3">
         <div>
           <div class="text-h2-section d-flex align-center ga-2"><v-icon icon="mdi-clipboard-check-outline" color="primary" /> Notificación de designación</div>
@@ -83,7 +83,7 @@ const roleLabel = (a: Assignment) => (a.type === 'TIEBREAKER' ? 'Jurado diriment
           <div class="text-meta">{{ a.thesis?.code }}</div>
           <div class="text-h6 text-primary font-weight-bold mb-1">{{ a.thesis?.title }}</div>
           <div class="text-body-2 text-medium-emphasis mb-3">
-            <strong>Estudiante:</strong> {{ a.thesis?.studentName }}
+            <strong>{{ studentLabel(a.thesis?.studentName) }}:</strong> {{ a.thesis?.studentName }}
             <template v-if="a.thesis?.advisorName"> · <strong>Director:</strong> {{ a.thesis.advisorName }}</template>
           </div>
           <v-alert v-if="a.thesis?.abstract" type="info" variant="tonal" density="compact" icon="mdi-text-box-outline">

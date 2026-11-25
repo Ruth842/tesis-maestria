@@ -100,6 +100,9 @@ export interface Thesis {
   abstract?: string;
   keywords: string[];
   studentId: string;
+  /** Co-authors of a joint thesis, besides `studentId`. */
+  coStudentIds?: string[];
+  /** Every student's name, comma separated. */
   studentName: string;
   advisorId: string;
   coAdvisorIds: string[];
@@ -177,11 +180,23 @@ export interface CreateThesisInput {
   abstract?: string;
   keywords?: string[];
   studentId: string;
+  coStudentIds?: string[];
   advisorId: string;
   coAdvisorIds?: string[];
   programId: string;
   cohortId: string;
   periodId: string;
+}
+
+/** PATCH /theses/:id: main student, program, cohort and period are fixed. */
+export interface UpdateThesisInput {
+  title?: string;
+  abstract?: string;
+  keywords?: string[];
+  coStudentIds?: string[];
+  advisorId?: string;
+  coAdvisorIds?: string[];
+  conflictOfInterestUserIds?: string[];
 }
 
 export interface JurorSummary {
@@ -236,6 +251,15 @@ export interface NewExternalJuror {
   institution: string;
   highestDegree: string;
   country: string;
+  /** New Universidad de Córdoba professor not yet registered (counts for RF-C13). */
+  isUnicordoba?: boolean;
+}
+
+/** GET /theses/:id/juror-candidates: faculty ranked for one thesis. */
+export interface JurorCandidate extends User {
+  affinity: string[];
+  activeAssignments: number;
+  conflict: 'PARTY' | 'PREVIOUS_JUROR' | null;
 }
 
 export interface JurorInput {
@@ -274,6 +298,8 @@ export interface FileRef {
   fileId: string;
   fileName: string;
   uploadedAt: string;
+  /** Correction files: manuscript version the juror reviewed. */
+  manuscriptVersion?: number;
 }
 
 export interface Evaluation {

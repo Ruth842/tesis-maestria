@@ -7,7 +7,6 @@ import {
   DefenseModality,
   ErrorCode,
   EvaluationVerdict,
-  FeedbackChapter,
   FeedbackStatus,
   JuryViolation,
   MinutesVerdict,
@@ -176,15 +175,6 @@ export const VERDICT_LABELS: Record<EvaluationVerdict, string> = {
   APPROVED: 'Aprobado (dirimente)',
 };
 
-export const CHAPTER_LABELS: Record<FeedbackChapter, string> = {
-  INTRODUCTION: 'Introducción',
-  THEORETICAL_FRAMEWORK: 'Marco teórico',
-  METHODOLOGY: 'Metodología',
-  RESULTS: 'Resultados',
-  CONCLUSIONS: 'Conclusiones',
-  OTHER: 'Otros',
-};
-
 export const FEEDBACK_STATUS_LABELS: Record<FeedbackStatus, string> = {
   PENDING: 'Pendiente',
   ADDRESSED: 'Atendida',
@@ -229,3 +219,6 @@ export const formatDate = (d?: string | Date | null, withTime = false): string =
 
 export const fullName = (u?: { firstName?: string; lastName?: string } | null): string =>
   u ? `${u.firstName ?? ''} ${u.lastName ?? ''}`.trim() : '—';
+
+/** "Estudiante" or "Estudiantes" for a comma-separated studentName (joint theses). */
+export const studentLabel = (names?: string | null) => (names?.includes(', ') ? 'Estudiantes' : 'Estudiante');

@@ -15,7 +15,7 @@ import { AppException } from '../common/errors/app.exception';
 import { Actor, actorFrom } from '../common/types/actor';
 import type { AuthUser } from '../common/types/auth-user';
 import { ThesisDocument } from '../theses/schemas/thesis.schema';
-import { canReadThesis } from '../theses/thesis-access.policy';
+import { canReadThesis, isThesisStudent } from '../theses/thesis-access.policy';
 import { ThesesService } from '../theses/theses.service';
 import { UsersService } from '../users/users.service';
 import { WorkflowService } from '../workflow/workflow.service';
@@ -190,7 +190,7 @@ export class FeedbackService {
     const doc = await this.model.create({
       thesisId: ctx.thesis._id,
       jurorId: new Types.ObjectId(user.id),
-      chapter: dto.chapter,
+      chapter: dto.chapter ?? FeedbackChapter.GENERAL,
       reference: dto.reference || undefined,
       content: dto.content,
       status: FeedbackStatus.PENDING,
@@ -399,7 +399,7 @@ export class FeedbackService {
     const isStudent =
       !user.scope &&
       user.roles.includes(Role.STUDENT) &&
-      thesis.studentId.equals(user.id);
+      isThesisStudent(thesis, user.id);
     const isJuror =
       (await this.theses.jurorAccess(thesis._id, user)) === 'MANUSCRIPT';
     const staff = !user.scope && canReadThesis(user, thesis);

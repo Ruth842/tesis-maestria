@@ -32,6 +32,7 @@ import {
 } from '../files/files.service';
 import { ThesisDocument } from '../theses/schemas/thesis.schema';
 import { ThesesService } from '../theses/theses.service';
+import { isThesisStudent } from '../theses/thesis-access.policy';
 import { UsersService } from '../users/users.service';
 import { WorkflowService } from '../workflow/workflow.service';
 import { SaveEvaluationDto } from './dto/evaluation.dto';
@@ -68,7 +69,12 @@ export interface EvaluationView {
   score: number | null;
   verdict: EvaluationVerdict | null;
   comments: string;
-  correctionFiles: { fileId: string; fileName: string; uploadedAt: Date }[];
+  correctionFiles: {
+    fileId: string;
+    fileName: string;
+    uploadedAt: Date;
+    manuscriptVersion?: number;
+  }[];
   status: EvaluationStatus;
   submittedAt?: Date;
   studentFirstViewedAt?: Date;
@@ -121,6 +127,16 @@ const notComplete = (details?: unknown) =>
   );
 
 const CORRECTION_TYPES: readonly AllowedFileType[] = ['pdf', 'doc', 'docx'];
+
+/**
+ * Thesis statuses in which the juror may still upload the corrected document after
+ * submitting the verdict (the student works on it during these stages).
+ */
+const CORRECTION_AFTER_SUBMIT_STATUSES: readonly ThesisStatus[] = [
+  ThesisStatus.UNDER_EVALUATION,
+  ThesisStatus.IN_DISPUTE,
+  ThesisStatus.REVISIONS_IN_PROGRESS,
+];
 
 /** Blob prefix of an evaluation's correction files. */
 const correctionScope = (e: EvaluationDocument) =>
@@ -387,7 +403,10 @@ export class EvaluationsService {
     return view;
   }
 
-  /** Correction file (pdf/doc/docx) by the author while the evaluation is a draft. */
+  /**
+   * Corrected document (pdf/doc/docx) by the author: while the evaluation is a draft, or
+   * after submitting it while the thesis is still being evaluated or revised.
+   */
   async addCorrection(
     id: string,
     file: UploadInput | undefined,
@@ -436,7 +455,10 @@ export class EvaluationsService {
     return this.attachCorrection(e, stored);
   }
 
-  /** The author's own draft (and within a scoped session's assignments). */
+  /**
+   * The author's own evaluation (within a scoped session's assignments) that still accepts
+   * corrected documents: a draft, or a submitted one while the thesis is open.
+   */
   private async findCorrectable(
     id: string,
     user: AuthUser,
@@ -447,23 +469,40 @@ export class EvaluationsService {
       (!user.scope ||
         user.scope.assignmentIds.includes(e.assignmentId.toHexString()));
     if (!owner) throw evaluationNotFound();
-    if (e.status !== EvaluationStatus.DRAFT) throw locked();
+    if (e.status !== EvaluationStatus.DRAFT) {
+      const thesis = await this.theses.findById(e.thesisId.toHexString());
+      if (!CORRECTION_AFTER_SUBMIT_STATUSES.includes(thesis.status))
+        throw locked();
+    }
     return e;
+  }
+
+  /** Version number of the thesis' current manuscript, if any. */
+  private async currentManuscriptVersion(
+    thesisId: Types.ObjectId,
+  ): Promise<number | undefined> {
+    const thesis = await this.theses.findById(thesisId.toHexString());
+    const current = thesis.currentManuscriptId;
+    return current
+      ? thesis.manuscripts.find((m) => m.fileId.equals(current))?.version
+      : undefined;
   }
 
   private async attachCorrection(
     e: EvaluationDocument,
     stored: StoredFile,
   ): Promise<EvaluationView> {
+    const manuscriptVersion = await this.currentManuscriptVersion(e.thesisId);
     const updated = await this.model
       .findOneAndUpdate(
-        { _id: e._id, status: EvaluationStatus.DRAFT },
+        { _id: e._id },
         {
           $push: {
             correctionFiles: {
               fileId: new Types.ObjectId(stored.id),
               fileName: stored.fileName,
               uploadedAt: new Date(),
+              manuscriptVersion,
             },
           },
         },
@@ -629,7 +668,7 @@ export class EvaluationsService {
     if (
       !user.scope &&
       user.roles.includes(Role.STUDENT) &&
-      thesis.studentId.equals(user.id)
+      isThesisStudent(thesis, user.id)
     )
       return 'STUDENT';
     return null;
@@ -709,6 +748,7 @@ export class EvaluationsService {
           fileId: f.fileId.toHexString(),
           fileName: f.fileName,
           uploadedAt: f.uploadedAt,
+          manuscriptVersion: f.manuscriptVersion,
         })),
         status: d.status,
         submittedAt: d.submittedAt,
