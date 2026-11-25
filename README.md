@@ -2,6 +2,8 @@
 
 Plataforma para gestionar el ciclo completo de un trabajo de grado de posgrado: radicación, asignación de jurados (CU-01, CU-08), evaluación (CU-02), discrepancias y dirimencia (CU-05), observaciones (CU-06), sustentación (CU-03), acta sellada en PDF (CU-04), trazabilidad (CU-07), notificaciones internas, alertas programadas, reportes y auditoría.
 
+https://ruth-mietia.vercel.app/
+
 ## Monorepo (pnpm)
 
 | Carpeta | Contenido |
